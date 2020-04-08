@@ -24,10 +24,12 @@ void setnonblocking(int sock) {
 }
 
 int find_user_by_fd(int fd) {
-    if(fd < 0) return -1;
+    if (fd < 0) {
+        return -1;
+    }
     pthread_mutex_lock(&mutex);
-    for(int i = 0; i < MAX_USER; i++) {
-        if(user_info_table[i].fd == fd) {
+    for (int i = 0; i < MAX_USER; ++i) {
+        if (user_info_table[i].fd == fd) {
             pthread_mutex_unlock(&mutex);
             return i;
         }
@@ -38,8 +40,8 @@ int find_user_by_fd(int fd) {
 
 int find_user_by_ip(uint32_t addr) {
     pthread_mutex_lock(&mutex);
-    for (int i = 0; i < MAX_USER; i++) {
-        if (user_info_table[i].fd != -1 && user_info_table[i].v4addr.s_addr == addr) {
+    for (int i = 0; i < MAX_USER; ++i) {
+        if ((user_info_table[i].fd != -1) && (user_info_table[i].v4addr.s_addr == addr)) {
             pthread_mutex_unlock(&mutex);
             return i;
         }
@@ -81,17 +83,20 @@ int send_keepalive(int fd) {
 int sock_receive(int fd, char* buff, int n) {
     int left = n;
     pthread_mutex_lock(&sock_lock);
-    while(left > 0) {
+    while (left > 0) {
         ssize_t recvn = recv(fd, buff + n - left, left, 0);
-        if ( recvn == -1 ) {
+        if (recvn == -1) {
             return -1;
             // usleep(100);
             // continue;
-        } else if( recvn == 0 ) {
+        } 
+        else if (recvn == 0) {
             return 0;
-        } else if( recvn > 0 ) {
+        } 
+        else if (recvn > 0) {
             left -= recvn;
-        } else {
+        } 
+        else {
             logger.error("sock_receive error");
             return -1;
         }
@@ -103,7 +108,7 @@ int sock_receive(int fd, char* buff, int n) {
 void process_packet_to_tun() {
     struct Msg msg;
     int ret = read(tun_fd, msg.data, 1500);
-    if( ret <= 0 ) {
+    if (ret <= 0) {
         logger.error("Read packet to tun failed");
         return;
     }
@@ -113,6 +118,7 @@ void process_packet_to_tun() {
     char saddr[16], daddr[16];
     inet_ntop(AF_INET, &hdr->saddr, saddr, sizeof(saddr));
     inet_ntop(AF_INET, &hdr->daddr, daddr, sizeof(daddr));
+    
     int user = find_user_by_ip(hdr->daddr);
     if (user < 0) {
         logger.error("Cannot find client %s", daddr);
@@ -124,12 +130,13 @@ void process_packet_to_tun() {
 
     int fd = user_info_table[user].fd;
     // printf("A packet from %s to %s\n", saddr, daddr);
-    //set the packet to client
+
+    //set the packet back to client
     if (hdr->version == 4) {
         msg.type = NET_RESPONSE;
         msg.length = ret;
         pthread_mutex_lock(&sock_lock);
-        if( (send(fd, &msg, msg.length, 0)) < 0) {
+        if((send(fd, &msg, msg.length, 0)) < 0) {
             pthread_mutex_unlock(&sock_lock);
             logger.error("Send to client %s failed", daddr);
             return;
@@ -140,40 +147,46 @@ void process_packet_to_tun() {
 }
 
 int process_packet_from_client(int fd, int user) {
-    if(fd < 0) return -1;
+    if (fd < 0) {
+        return -1;
+    }
+
     struct Msg msg;
     int n = sock_receive(fd, (char*)&msg, MSG_HEADER_SIZE);
-    if( n <= 0 ){
+    if (n <= 0){
         logger.error("Receive from client %d failed", fd);
         close(fd);
-        for(int i = 0; i < MAX_USER; i++) {
-            if( user_info_table[i].fd == fd ) {
+        for (int i = 0; i < MAX_USER; ++i) {
+            if (user_info_table[i].fd == fd) {
                 user_info_table[i].fd = -1;
             }
         }
         return -1;
     }
 
-    if(msg.type == KEEPALIVE) {
+    if (msg.type == KEEPALIVE) {
         logger.info("Receive a keepalive packet from client %d", fd);
         user_info_table[user].secs = time(NULL);
-    } else if(msg.type == IP_REQUEST) {
+    } 
+    else if (msg.type == IP_REQUEST) {
         logger.info("Receive a IP REQUEST packet from client %d", fd);
         int ret;
-        if((ret=ip_response(fd, user) < 0)) {
-            logger.info("Send ip response to %d failed\n", fd);
+        if ((ret=ip_response(fd, user) < 0)) {
+            logger.info("Send ip response to %d failed", fd);
             // exit(0);
             return -1;
         }
         return ret;
-    } else if(msg.type == NET_REQUEST) {
+    } 
+    else if (msg.type == NET_REQUEST) {
         // printf("Receive a NET REQUEST packet\n");
         n = sock_receive(fd,msg.data,msg.length - MSG_HEADER_SIZE);
-        if(n == msg.length - MSG_HEADER_SIZE) {
+        if (n == msg.length - MSG_HEADER_SIZE) {
             iphdr *hdr = (struct iphdr *)msg.data;
             write(tun_fd, msg.data, MSG_DATA_SIZE(msg));
         }
-    } else {
+    } 
+    else {
         logger.info("Receive unknown type packet from client %d", fd);
     }
     return 0;
@@ -208,7 +221,7 @@ int init_server() {
         close(listenfd);
         exit(-1);
     }
-    if( (ret=listen(listenfd, MAX_USER)) < 0 ) {
+    if ((ret=listen(listenfd, MAX_USER)) < 0) {
         logger.error("Server listen failed");
     }
     setnonblocking(listenfd);
@@ -229,7 +242,7 @@ void init_iptable() {
 //refer to linux kernel
 int tun_alloc(char* dev) {
     int fd, err;
-    if((fd = open("/dev/net/tun", O_RDWR)) < 0){
+    if ((fd = open("/dev/net/tun", O_RDWR)) < 0){
         logger.error("Create tun failed");
         return fd;
     }
@@ -238,9 +251,9 @@ int tun_alloc(char* dev) {
     memset(&ifr, 0, sizeof(struct ifreq));
     ifr.ifr_flags |= IFF_TUN | IFF_NO_PI;
 
-    if( *dev )
+    if (*dev)
         strncpy(ifr.ifr_name, dev, IFNAMSIZ);
-    if ( (err=ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
+    if ((err=ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
         logger.error("Set tun device name failed");
         close(fd);
         return err;
@@ -270,16 +283,16 @@ void init_tun() {
 
 void* keepalive_func(void*) {
     pthread_mutex_lock(&mutex);
-    while(true) {
+    while (true) {
         pthread_mutex_unlock(&mutex);
         sleep(1);
         pthread_mutex_lock(&mutex);
-        for ( int i = 0; i < MAX_USER; i++ ) {
+        for (int i = 0; i < MAX_USER; ++i) {
             int fd = user_info_table[i].fd;
-            if ( fd == -1 ) {
+            if (fd == -1) {
                 continue;
             }
-            if ( time(NULL) - user_info_table[i].secs > 60 ) {
+            if (time(NULL) - user_info_table[i].secs > 60) {
                 logger.info("Timeout, remove client %d", fd);
                 user_info_table[i].fd = -1;
                 close(fd);
@@ -298,8 +311,8 @@ void* keepalive_func(void*) {
 void close_all() {
     close(tun_fd);
     close(listenfd);
-    for(int i = 0; i < MAX_USER; i++) {
-        if(user_info_table[i].fd >= 0) {
+    for (int i = 0; i < MAX_USER; ++i) {
+        if (user_info_table[i].fd >= 0) {
             close(user_info_table[i].fd);
         }
     }
@@ -332,16 +345,16 @@ int main(){
     logger.info("Keep alive thread start");
 
     //init user_info_table
-    for (int i = 0; i < MAX_USER; i++) {
+    for (int i = 0; i < MAX_USER; ++i) {
         user_info_table[i].v4addr.s_addr = htonl(IP_POOL_START + i);
         user_info_table[i].fd = -1;
     }
 
     struct sockaddr_in6 clientaddr;
     socklen_t client_len = sizeof(clientaddr);
-    while(true) {
+    while (true) {
         nfds = epoll_wait(epfd, events, 20, 500);
-        for(int i = 0; i < nfds; i++) {
+        for (int i = 0; i < nfds; ++i) {
             if (events[i].data.fd == listenfd) { //listen event
                 logger.info("Reveive listening event");
                 clientfd = accept(listenfd, (struct sockaddr *)&clientaddr, &client_len);
@@ -355,7 +368,7 @@ int main(){
 
                 int i = 0;
                 pthread_mutex_lock(&mutex);
-                for (; i < MAX_USER; i++) {
+                for (; i < MAX_USER; ++i) {
                     if (user_info_table[i].fd == -1) {
                         user_info_table[i].fd = clientfd;
                         memcpy(&(user_info_table[i].v6addr), &clientaddr, sizeof(struct sockaddr));
@@ -366,7 +379,7 @@ int main(){
                 }
                 pthread_mutex_unlock(&mutex);
 
-                if ( i == MAX_USER ) {
+                if (i == MAX_USER) {
                     logger.error("Cannot accept any more clients");
                     continue;
                 }
@@ -380,7 +393,8 @@ int main(){
             else { 
                 if (events[i].data.fd == tun_fd) {
                     process_packet_to_tun();
-                } else if(events[i].events & EPOLLIN) {
+                } 
+                else if (events[i].events & EPOLLIN) {
                     //only for one client
                     int fd = events[i].data.fd;
                     int user = 0;
@@ -393,7 +407,7 @@ int main(){
                     int nread = 0;
                     int tret = ioctl(fd, FIONREAD, &nread);
 
-                    if ((tret < 0) || (!nread)) {
+                    if((tret < 0) || (!nread)) {
                         logger.info("Client %d, disconnected", fd);
                         close(fd);
                         event_del(fd);
