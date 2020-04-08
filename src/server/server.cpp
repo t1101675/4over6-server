@@ -4,7 +4,7 @@
 int epfd;
 int tunfd = -1;
 int listenfd = -1; //for server to listen
-in_addr tun_addr;
+// in_addr tun_addr;
 Logger logger;
 pthread_mutex_t mutex;
 pthread_mutex_t sock_lock;
@@ -131,7 +131,7 @@ void process_packet_to_tun() {
     int fd = user_info_table[user].fd;
     // printf("A packet from %s to %s\n", saddr, daddr);
 
-    //set the packet back to client
+    //send the packet back to client
     if (ip_head->version == 4) {
         msg.type = NET_RESPONSE;
         msg.length = ret;
@@ -180,7 +180,7 @@ int process_packet_from_client(int fd, int user) {
     } 
     else if (msg.type == NET_REQUEST) {
         // printf("Receive a NET REQUEST packet\n");
-        n = sock_receive(fd,msg.data,msg.length - MSG_HEADER_SIZE);
+        n = sock_receive(fd, msg.data,msg.length - MSG_HEADER_SIZE);
         if (n == msg.length - MSG_HEADER_SIZE) {
             iphdr *hdr = (struct iphdr *)msg.data;
             write(tunfd, msg.data, MSG_DATA_SIZE(msg));
@@ -271,9 +271,9 @@ int tun_alloc(char* dev) {
 }
 
 void init_tun() {
-    tun_addr={0};
-    inet_aton("10.0.0.2", &tun_addr);
-    logger.info("TUN ADDRESS: 10.0.0.2");
+    // tun_addr={0};
+    // inet_aton("10.0.0.2", &tun_addr);
+    // logger.info("TUN ADDRESS: 10.0.0.2");
 
     char dev[IFNAMSIZ];
     strcpy(dev, "4over6");

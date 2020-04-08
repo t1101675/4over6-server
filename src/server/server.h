@@ -57,7 +57,7 @@ struct Msg {
 #define IP_TO_UINT(a, b, c, d) (((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
 #define IP_POOL_START IP_TO_UINT(10, 0, 0, 3)
 
-struct user_info {
+struct UserInfo {
     int fd;
     int count;
     int secs;
