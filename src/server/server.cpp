@@ -35,13 +35,32 @@ int find_user_by_fd(int fd) {
     return -1;
 }
 
+int find_user_by_ip(uint32_t addr) {
+    pthread_mutex_lock(&mutex);
+    for (int i = 0; i < MAX_USER; i++) {
+        if (user_info_table[i].fd != -1 && user_info_table[i].v4addr.s_addr == addr) {
+            pthread_mutex_unlock(&mutex);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&mutex);
+    return -1;
+}
+
 //response to IP_REQUEST packet
-int ip_response(int fd) {
+int ip_response(int fd, int user) {
     printf("Send IP_RESPONSE packet\n");
     Msg msg;
     msg.type = IP_RESPONSE;
-    sprintf(msg.data ,"%s 0.0.0.0 202.38.120.242 8.8.8.8 202.106.0.20 ", inet_ntoa(tun_addr));
-    msg.length = strlen(msg.data) + MSG_HEADER_SIZE;
+    char ip_str[16];
+    inet_ntop(AF_INET, &(user_info_table[user].v4addr), ip_str, 16);
+    // struct in_addr temp = user_info_table[user].v4addr;
+    // temp.s_addr = ntohl(temp.s_addr);
+
+    // sprintf(msg.data ,"%s 0.0.0.0 202.38.120.242 8.8.8.8 202.106.0.20", inet_ntoa(tun_addr));
+    sprintf(msg.data ,"%s 0.0.0.0 202.38.120.242 8.8.8.8 202.106.0.20", ip_str);
+
+    msg.length = strlen(msg.data) + MSG_HEADER_SIZE + 1;
     int ret;
     pthread_mutex_lock(&sock_lock);
     ret = send(fd, &msg, msg.length, 0);
@@ -83,9 +102,9 @@ int sock_receive(int fd, char* buff, int n) {
     return n;
 }
 
-void process_packet_to_tun(int fd) {
+void process_packet_to_tun() {
     struct Msg msg;
-    printf("Processing packet to tun: ");
+    // printf("Processing packet to tun: ");
     int ret = read(tun_fd, msg.data, 1500);
     if( ret <= 0 ) {
         printf("Error processing tun packet\n");
@@ -97,9 +116,19 @@ void process_packet_to_tun(int fd) {
     char saddr[16], daddr[16];
     inet_ntop(AF_INET, &hdr->saddr, saddr, sizeof(saddr));
     inet_ntop(AF_INET, &hdr->daddr, daddr, sizeof(daddr));
-    printf("A packet from %s to %s\n", saddr, daddr);
+    int user = find_user_by_ip(hdr->daddr);
+    if (user < 0) {
+        printf("Find user failed %s\n", daddr);
+        return;
+    }
+
+    assert(user_info_table[user].fd != -1);
+    assert(user_info_table[user].v4addr.s_addr == hdr->daddr);
+
+    int fd = user_info_table[user].fd;
+    // printf("A packet from %s to %s\n", saddr, daddr);
     //set the packet to client
-    if(hdr->version == 4 && hdr->daddr == tun_addr.s_addr && fd > 0) {
+    if (hdr->version == 4) {
         msg.type = NET_RESPONSE;
         msg.length = ret;
         pthread_mutex_lock(&sock_lock);
@@ -110,7 +139,7 @@ void process_packet_to_tun(int fd) {
             return;
         }
         pthread_mutex_unlock(&sock_lock);
-        printf("Send back NET_REPONSE packet, len=%d\n", ret);
+        // printf("Send back NET_REPONSE packet, len=%d\n", ret);
     }
 }
 
@@ -141,22 +170,22 @@ int process_packet_from_client(int fd, int user) {
     } else if(msg.type == IP_REQUEST) {
         printf("Receive a IP REQUEST packet\n");
         int ret;
-        if( (ret=ip_response(fd) < 0) ) {
+        if( (ret=ip_response(fd, user) < 0) ) {
             printf("Send ip response failed\n");
             exit(0);
         }
         return ret;
     } else if(msg.type == NET_REQUEST) {
-        printf("Receive a NET REQUEST packet\n");
+        // printf("Receive a NET REQUEST packet\n");
         n = sock_receive(fd,msg.data,msg.length - MSG_HEADER_SIZE);
         if(n == msg.length - MSG_HEADER_SIZE) {
             iphdr *hdr = (struct iphdr *)msg.data;
-            if( hdr->version == 4 ){
-                hdr->saddr = tun_addr.s_addr;
-            }
-            if( hdr->saddr == tun_addr.s_addr ){
-                write(tun_fd, msg.data, MSG_DATA_SIZE(msg));
-            }
+            // if( hdr->version == 4 ){
+            //     hdr->saddr = tun_addr.s_addr;
+            // }
+            write(tun_fd, msg.data, MSG_DATA_SIZE(msg));
+            // if( hdr->saddr == tun_addr.s_addr ){
+            // }
         }
     } else {
         printf("Receive unknown type packet\n");
@@ -238,15 +267,15 @@ int tun_alloc(char* dev) {
     system(buffer);
     sprintf(buffer,"ip a add 10.0.0.1/24 dev %s", ifr.ifr_name);
     system(buffer);
-    sprintf(buffer,"ip link set dev %s mtu %u", ifr.ifr_name, 1500 - MSG_HEADER_SIZE);
+    sprintf(buffer,"ip link set dev %s mtu %u", ifr.ifr_name, 1500);
     system(buffer);
     return fd;
 }
 
 void init_tun() {
     tun_addr={0};
-    inet_aton("10.0.0.3", &tun_addr);
-    printf("TUN ADDRESS: 10.0.0.3\n");
+    inet_aton("10.0.0.2", &tun_addr);
+    printf("TUN ADDRESS: 10.0.0.2\n");
 
     char dev[IFNAMSIZ];
     strcpy(dev, "4over6");
@@ -320,8 +349,7 @@ int main(){
 
     //init user_info_table
     for (int i = 0; i < MAX_USER; i++) {
-        in_addr_t client_start = inet_addr(CLIENT_START_ADDR);
-        user_info_table[i].v4addr.s_addr = htonl(client_start + i);
+        user_info_table[i].v4addr.s_addr = htonl(IP_POOL_START + i);
         user_info_table[i].fd = -1;
     }
 
@@ -348,7 +376,7 @@ int main(){
                         user_info_table[i].fd = connfd;
                         memcpy(&(user_info_table[i].v6addr), &clientaddr, sizeof(struct sockaddr));
                         user_info_table[i].secs = time(NULL);
-                        user_info_table[i].count = 5;
+                        user_info_table[i].count = 20;
                         break;
                     }
                 }
@@ -370,17 +398,29 @@ int main(){
                     //     printf("\033[31m Client is disconnected\n\033[0m");
                     //     continue;
                     // }
-                    process_packet_to_tun(client_fd);
+                    process_packet_to_tun();
                 } else if(events[i].events & EPOLLIN) {
                     //only for one client
                     int fd = events[i].data.fd;
                     int user = 0;
                     user = find_user_by_fd(fd);
-                    if(user < 0 || user >= MAX_USER) {
+                    if (user < 0 || user >= MAX_USER) {
                         printf("Error receving a packet from unknown user");
                         continue;
                     }
-                    printf("Processing packet from user %d, fd %d\n", user, fd);
+
+                    int nread = 0;
+                    int tret = ioctl(fd, FIONREAD, &nread);
+
+                    if ((tret < 0) || (!nread)) {
+                        close(fd);
+                        event_del(fd);
+                        user_info_table[user].fd = -1;
+                        printf("Client disconnected\n");
+                        continue;
+                    }
+
+                    // printf("Processing packet from user %d, fd %d\n", user, fd);
                     process_packet_from_client(fd, user);
                 }
             }
