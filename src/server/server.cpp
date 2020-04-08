@@ -2,7 +2,7 @@
 #include "logger.h"
 
 int epfd;
-int tun_fd = -1;
+int tunfd = -1;
 int listenfd = -1; //for server to listen
 in_addr tun_addr;
 Logger logger;
@@ -107,32 +107,32 @@ int sock_receive(int fd, char* buff, int n) {
 
 void process_packet_to_tun() {
     struct Msg msg;
-    int ret = read(tun_fd, msg.data, 1500);
+    int ret = read(tunfd, msg.data, 1500);
     if (ret <= 0) {
         logger.error("Read packet to tun failed");
         return;
     }
 
     ret += MSG_HEADER_SIZE;
-    struct iphdr *hdr = (struct iphdr *)msg.data;
+    struct iphdr *ip_head = (struct iphdr *)msg.data;
     char saddr[16], daddr[16];
-    inet_ntop(AF_INET, &hdr->saddr, saddr, sizeof(saddr));
-    inet_ntop(AF_INET, &hdr->daddr, daddr, sizeof(daddr));
+    inet_ntop(AF_INET, &ip_head->saddr, saddr, sizeof(saddr));
+    inet_ntop(AF_INET, &ip_head->daddr, daddr, sizeof(daddr));
     
-    int user = find_user_by_ip(hdr->daddr);
+    int user = find_user_by_ip(ip_head->daddr);
     if (user < 0) {
         logger.error("Cannot find client %s", daddr);
         return;
     }
 
     assert(user_info_table[user].fd != -1);
-    assert(user_info_table[user].v4addr.s_addr == hdr->daddr);
+    assert(user_info_table[user].v4addr.s_addr == ip_head->daddr);
 
     int fd = user_info_table[user].fd;
     // printf("A packet from %s to %s\n", saddr, daddr);
 
     //set the packet back to client
-    if (hdr->version == 4) {
+    if (ip_head->version == 4) {
         msg.type = NET_RESPONSE;
         msg.length = ret;
         pthread_mutex_lock(&sock_lock);
@@ -183,7 +183,7 @@ int process_packet_from_client(int fd, int user) {
         n = sock_receive(fd,msg.data,msg.length - MSG_HEADER_SIZE);
         if (n == msg.length - MSG_HEADER_SIZE) {
             iphdr *hdr = (struct iphdr *)msg.data;
-            write(tun_fd, msg.data, MSG_DATA_SIZE(msg));
+            write(tunfd, msg.data, MSG_DATA_SIZE(msg));
         }
     } 
     else {
@@ -192,7 +192,8 @@ int process_packet_from_client(int fd, int user) {
     return 0;
 }
 
-struct epoll_event ev, events[20];;
+struct epoll_event ev, events[20];
+
 void event_add(int fd) {
     ev.data.fd = fd;
     ev.events = EPOLLIN;
@@ -221,7 +222,7 @@ int init_server() {
         close(listenfd);
         exit(-1);
     }
-    if ((ret=listen(listenfd, MAX_USER)) < 0) {
+    if ((ret = listen(listenfd, MAX_USER)) < 0) {
         logger.error("Server listen failed");
     }
     setnonblocking(listenfd);
@@ -253,7 +254,7 @@ int tun_alloc(char* dev) {
 
     if (*dev)
         strncpy(ifr.ifr_name, dev, IFNAMSIZ);
-    if ((err=ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
+    if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
         logger.error("Set tun device name failed");
         close(fd);
         return err;
@@ -276,9 +277,9 @@ void init_tun() {
 
     char dev[IFNAMSIZ];
     strcpy(dev, "4over6");
-    tun_fd = tun_alloc(dev);
-    setnonblocking(tun_fd);
-    event_add(tun_fd);
+    tunfd = tun_alloc(dev);
+    setnonblocking(tunfd);
+    event_add(tunfd);
 }
 
 void* keepalive_func(void*) {
@@ -309,7 +310,7 @@ void* keepalive_func(void*) {
 }
  
 void close_all() {
-    close(tun_fd);
+    close(tunfd);
     close(listenfd);
     for (int i = 0; i < MAX_USER; ++i) {
         if (user_info_table[i].fd >= 0) {
@@ -336,7 +337,7 @@ int main(){
 
     logger.info("Server Start, Listening at %d", SERVER_PORT);
     logger.info("Listen fd: %d", listenfd);
-    logger.info("Tun fd: %d", tun_fd);
+    logger.info("Tun fd: %d", tunfd);
 
     int nfds, clientfd, ret;
 
@@ -391,7 +392,7 @@ int main(){
                 logger.info("A new client %s: %d", str_addr, ntohs(clientaddr.sin6_port));
             } 
             else { 
-                if (events[i].data.fd == tun_fd) {
+                if (events[i].data.fd == tunfd) {
                     process_packet_to_tun();
                 } 
                 else if (events[i].events & EPOLLIN) {
