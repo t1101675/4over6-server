@@ -24,6 +24,15 @@
 #include <linux/if.h>
 #include <linux/if_tun.h>
 
+// Message types
+/*
+	100: IP request
+	101: IP response
+	102: Network request
+	103: Network response
+	104: Keepalive
+*/
+
 #define IP_REQUEST    100
 #define IP_RESPONSE   101
 #define NET_REQUEST   102
