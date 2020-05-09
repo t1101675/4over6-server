@@ -1,26 +1,24 @@
 #include "server.h"
 #include "logger.h"
 
-int epfd;
-int tunfd = -1;
-int listenfd = -1; //for server to listen
-// in_addr tun_addr;
+int epoll;
+int listen_fd = -1; //for server to listen
+int tun_fd = -1;
 Logger logger;
 pthread_mutex_t mutex;
 pthread_mutex_t sock_lock;
 
-void setnonblocking(int sock) {
-    int opts;
-    opts = fcntl(sock, F_GETFL);
-    if(opts < 0) {
-        logger.error("fcntl(sock,GETFL)");
-        exit(1);
+int find_user_by_ip(uint32_t addr) {
+    pthread_mutex_lock(&mutex);
+    for (int i = 0; i < MAX_USER; ++i) {
+        if ((user_info_table[i].fd != -1) &&
+            (user_info_table[i].v4addr.s_addr == addr)) {
+            pthread_mutex_unlock(&mutex);
+            return i;
+        }
     }
-    opts = opts | O_NONBLOCK;
-    if( fcntl(sock, F_SETFL, opts) < 0 ){
-        logger.error("fcntl(sock,SETFL,opts)");
-        exit(1);
-    }
+    pthread_mutex_unlock(&mutex);
+    return -1;
 }
 
 int find_user_by_fd(int fd) {
@@ -30,18 +28,6 @@ int find_user_by_fd(int fd) {
     pthread_mutex_lock(&mutex);
     for (int i = 0; i < MAX_USER; ++i) {
         if (user_info_table[i].fd == fd) {
-            pthread_mutex_unlock(&mutex);
-            return i;
-        }
-    }
-    pthread_mutex_unlock(&mutex);
-    return -1;
-}
-
-int find_user_by_ip(uint32_t addr) {
-    pthread_mutex_lock(&mutex);
-    for (int i = 0; i < MAX_USER; ++i) {
-        if ((user_info_table[i].fd != -1) && (user_info_table[i].v4addr.s_addr == addr)) {
             pthread_mutex_unlock(&mutex);
             return i;
         }
@@ -68,7 +54,7 @@ int ip_response(int fd, int user) {
     return ret;
 }
 
-int send_keepalive(int fd) {
+int send_keep_alive(int fd) {
     logger.info("Send KEEPALIVE packet to %d", fd);
     Msg msg;
     msg.type = KEEPALIVE;
@@ -87,8 +73,6 @@ int sock_receive(int fd, char* buff, int n) {
         ssize_t recvn = recv(fd, buff + n - left, left, 0);
         if (recvn == -1) {
             return -1;
-            // usleep(100);
-            // continue;
         } 
         else if (recvn == 0) {
             return 0;
@@ -107,7 +91,7 @@ int sock_receive(int fd, char* buff, int n) {
 
 void recv_from_tun() {
     struct Msg msg;
-    int ret = read(tunfd, msg.data, 1500);
+    int ret = read(tun_fd, msg.data, 1500);
     if (ret <= 0) {
         logger.error("Read packet to tun failed");
         return;
@@ -129,7 +113,6 @@ void recv_from_tun() {
     assert(user_info_table[user].v4addr.s_addr == ip_head->daddr);
 
     int fd = user_info_table[user].fd;
-    // printf("A packet from %s to %s\n", saddr, daddr);
 
     //send the packet back to client
     if (ip_head->version == 4) {
@@ -142,7 +125,6 @@ void recv_from_tun() {
             return;
         }
         pthread_mutex_unlock(&sock_lock);
-        // printf("Send back NET_REPONSE packet, len=%d\n", ret);
     }
 }
 
@@ -173,17 +155,15 @@ int process_packet_from_client(int fd, int user) {
         int ret;
         if ((ret=ip_response(fd, user) < 0)) {
             logger.info("Send ip response to %d failed", fd);
-            // exit(0);
             return -1;
         }
         return ret;
     } 
     else if (msg.type == NET_REQUEST) {
-        // printf("Receive a NET REQUEST packet\n");
         n = sock_receive(fd, msg.data,msg.length - MSG_HEADER_SIZE);
         if (n == msg.length - MSG_HEADER_SIZE) {
             iphdr *hdr = (struct iphdr *)msg.data;
-            write(tunfd, msg.data, MSG_DATA_SIZE(msg));
+            write(tun_fd, msg.data, MSG_DATA_SIZE(msg));
         }
     } 
     else {
@@ -194,90 +174,102 @@ int process_packet_from_client(int fd, int user) {
 
 struct epoll_event ev, events[20];
 
-void event_add(int fd) {
-    ev.data.fd = fd;
+void add_ep_event(int fd) {
     ev.events = EPOLLIN;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, fd,&ev);
+    ev.data.fd = fd;
+    epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &ev);
 }
 
-void event_del(int fd) {
-    ev.data.fd= fd;
+void del_ep_event(int fd) {
     ev.events = EPOLLIN;
-    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, &ev);
+    ev.data.fd= fd;
+    epoll_ctl(epoll, EPOLL_CTL_DEL, fd, &ev);
+}
+
+void setnonblocking(int sock) {
+    int opts;
+    opts = fcntl(sock, F_GETFL);
+    if (opts < 0) {
+        logger.error("fcntl(sock,GETFL)");
+        exit(1);
+    }
+    opts = opts | O_NONBLOCK;
+    if (fcntl(sock, F_SETFL, opts) < 0) {
+        logger.error("fcntl(sock,SETFL,opts)");
+        exit(1);
+    }
 }
 
 int init_server() {
-    listenfd = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
-    if (listenfd == -1) {
+    listen_fd = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (listen_fd == -1) {
         logger.error("Server listening init failed");
-        exit(-1);
+        return listen_fd;
     }
     struct sockaddr_in6 server_addr;
     server_addr.sin6_family = AF_INET6;
     server_addr.sin6_addr = in6addr_any;
     server_addr.sin6_port = htons(SERVER_PORT);
-    int ret = bind(listenfd, (struct sockaddr *) &server_addr, sizeof(server_addr));
+    int ret = bind(listen_fd, (struct sockaddr *) &server_addr, sizeof(server_addr));
     if (ret == -1) {
         logger.error("Server bind failed");
-        close(listenfd);
-        exit(-1);
+        close(listen_fd);
+        return ret;
     }
-    if ((ret = listen(listenfd, MAX_USER)) < 0) {
+    if ((ret = listen(listen_fd, MAX_USER)) < 0) {
         logger.error("Server listen failed");
+        return ret;
     }
-    setnonblocking(listenfd);
-    event_add(listenfd);
-    return listenfd;
+    setnonblocking(listen_fd);
+    del_ep_event(listen_fd);
+    return listen_fd;
 }
 
 void init_iptable() {
     system("iptables -F");
     system("iptables -t nat -F");
-    //accept to forward all packages
     system("iptables -A FORWARD -j ACCEPT");
-    //when leave the interface, replace the source address
     system("iptables -t nat -A POSTROUTING -s 13.8.0.0/8 -j MASQUERADE");
 }
 
-//refer to linux kernel
-int tun_alloc(char* dev_name) {
-    int fd, err;
-    if ((fd = open("/dev/net/tun", O_RDWR)) < 0){
+int init_tun() {
+    char dev_name[IFNAMSIZ];
+    strcpy(dev_name, "4o6");
+    if ((tun_fd = open("/dev/net/tun", O_RDWR)) < 0) {
         logger.error("Create tun failed");
-        return fd;
+        return tun_fd;
     }
 
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(struct ifreq));
     ifr.ifr_flags |= IFF_TUN | IFF_NO_PI;
 
-    if (*dev_name)
+    if (*dev_name) {
         strncpy(ifr.ifr_name, dev_name, IFNAMSIZ);
-    if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
+    }
+
+    int ret = 0;
+    if ((ret = ioctl(tun_fd, TUNSETIFF, (void *)&ifr)) < 0) {
         logger.error("Set tun device name failed");
-        close(fd);
-        return err;
+        close(tun_fd);
+        return ret;
     }
 
     char buffer[256];
-    sprintf(buffer,"ip link set dev %s up", ifr.ifr_name);
+    sprintf(buffer, "ip link set dev %s up", ifr.ifr_name);
     system(buffer);
-    sprintf(buffer,"ip a add 13.8.0.1/24 dev %s", ifr.ifr_name);
+    sprintf(buffer, "ip a add 13.8.0.1/24 dev %s", ifr.ifr_name);
     system(buffer);
-    sprintf(buffer,"ip link set dev %s mtu %u", ifr.ifr_name, 1500);
+    sprintf(buffer, "ip link set dev %s mtu %u", ifr.ifr_name, 1500);
     system(buffer);
-    return fd;
+
+    setnonblocking(tun_fd);
+    add_ep_event(tun_fd);
+
+    return ret;
 }
 
-void init_tun() {
-    char dev[IFNAMSIZ];
-    strcpy(dev, "4over6");
-    tunfd = tun_alloc(dev);
-    setnonblocking(tunfd);
-    event_add(tunfd);
-}
-
-void* keepalive_func(void*) {
+void* keep_alive(void*) {
     pthread_mutex_lock(&mutex);
     while (true) {
         pthread_mutex_unlock(&mutex);
@@ -292,11 +284,11 @@ void* keepalive_func(void*) {
                 logger.info("Timeout, remove client %d", fd);
                 user_info_table[i].fd = -1;
                 close(fd);
-                event_del(fd);
+                del_ep_event(fd);
             } else {
                 user_info_table[i].count -= 1;
                 if ( user_info_table[i].count == 0 ) {
-                    send_keepalive(fd);
+                    send_keep_alive(fd);
                     user_info_table[i].count = 20;
                 }
             }
@@ -304,9 +296,13 @@ void* keepalive_func(void*) {
     }
 }
  
-void close_all() {
-    close(tunfd);
-    close(listenfd);
+void close_all_fd() {
+    if (tun_fd >= 0) {
+        close(tun_fd);
+    }
+    if (listen_fd >= 0) {
+        close(listen_fd);
+    }
     for (int i = 0; i < MAX_USER; ++i) {
         if (user_info_table[i].fd >= 0) {
             close(user_info_table[i].fd);
@@ -314,48 +310,54 @@ void close_all() {
     }
 }
 
-static void exit_handler(int sig) {
-    close_all();
+static void exit_server(int sig) {
+    close_all_fd();
     logger.info("Exit");
     exit(0);
 }
 
 int main(){
-    // When CTRL+C, close tunfd, listenfd, and fd for all users
-    signal(SIGINT, exit_handler);
+    signal(SIGINT, exit_server);
 
-    epfd = epoll_create(MAX_EPOLL_EVENT);
+    epoll = epoll_create(MAX_EPOLL_EVENT);
 
-    init_server();
+    int ret = 0;
+
+    if ((ret = init_server()) < 0) {
+        exit_server(2);
+    }
+    if ((ret = init_tun()) < 0) {
+        exit_server(2);
+    }
+
     init_iptable();
-    init_tun();
 
     logger.info("Server Start, Listening at %d", SERVER_PORT);
-    logger.info("Listen fd: %d", listenfd);
-    logger.info("Tun fd: %d", tunfd);
+    logger.info("Listen fd: %d", listen_fd);
+    logger.info("Tun fd: %d", tun_fd);
 
-    int nfds, clientfd, ret;
-
-    pthread_t keepalive_thread;
-    ret = pthread_create(&keepalive_thread, NULL, keepalive_func, NULL);
-    logger.info("Keep alive thread start");
-
-    //init user_info_table
+    // init user_info_table
     for (int i = 0; i < MAX_USER; ++i) {
         user_info_table[i].v4addr.s_addr = htonl(IP_POOL_START + i);
         user_info_table[i].fd = -1;
     }
 
+    // Start keep alive thread
+    pthread_t thread_keep_alive;
+    pthread_create(&thread_keep_alive, NULL, keep_alive, NULL);
+    logger.info("Keep alive thread start");
+
+    int num_ep_wait_fd = 0, clientfd = 0;
     struct sockaddr_in6 clientaddr;
     socklen_t client_len = sizeof(clientaddr);
     while (true) {
-        nfds = epoll_wait(epfd, events, 20, 500);
-        for (int i = 0; i < nfds; ++i) {
-            if (events[i].data.fd == listenfd) { //listen event
+        num_ep_wait_fd = epoll_wait(epoll, events, 30, 500);
+        
+        for (int i = 0; i < num_ep_wait_fd; ++i) {
+            if (events[i].data.fd == listen_fd) {
                 logger.info("Reveive listening event");
-                clientfd = accept(listenfd, (struct sockaddr *)&clientaddr, &client_len);
+                clientfd = accept(listen_fd, (struct sockaddr *)&clientaddr, &client_len);
                 if (clientfd == -1) {
-                    // perror("accept failed");
                     logger.error("Accept Listen failed");
                     close(clientfd);
                     exit(-1);
@@ -381,19 +383,19 @@ int main(){
                 }
                 i = 0;
 
-                event_add(clientfd);
+                add_ep_event(clientfd);
                 char str_addr[INET6_ADDRSTRLEN];
                 inet_ntop(AF_INET6, &(clientaddr.sin6_addr), str_addr, sizeof(str_addr));
                 logger.info("A new client %s: %d", str_addr, ntohs(clientaddr.sin6_port));
             } 
             else { 
-                if (events[i].data.fd == tunfd) {
+                if (events[i].data.fd == tun_fd) {
                     recv_from_tun();
                 } 
                 else if (events[i].events & EPOLLIN) {
                     int fd = events[i].data.fd;
-                    int user = 0;
-                    user = find_user_by_fd(fd);
+                    int user = find_user_by_fd(fd);
+
                     if (user < 0 || user >= MAX_USER) {
                         logger.error("Received a packet from unknown client");
                         continue;
@@ -405,7 +407,7 @@ int main(){
                     if((tret < 0) || (!nread)) {
                         logger.info("Client %d, disconnected", fd);
                         close(fd);
-                        event_del(fd);
+                        del_ep_event(fd);
                         user_info_table[user].fd = -1;
                         continue;
                     }
@@ -415,6 +417,6 @@ int main(){
             }
         }
     }
-    close_all();
+    close_all_fd();
     return 0;
 }
