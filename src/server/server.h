@@ -32,7 +32,7 @@
 #define SERVER_PORT   4321
 
 #define MAX_EPOLL_EVENT 100
-#define MAX_USER        10
+#define MAX_USER_NUM 20
 
 #define MAX_DATA_LEN  4096
 
@@ -42,8 +42,8 @@ struct Msg {
     char data[MAX_DATA_LEN];
 };
 
-#define MSG_HEADER_SIZE   5
-#define MSG_DATA_SIZE(msg)  (msg.length-MSG_HEADER_SIZE)
+#define HEADER_SIZE   5
+#define DATA_SIZE(msg)  (msg.length-HEADER_SIZE)
 #define IP_TO_UINT(a, b, c, d) (((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
 #define IP_POOL_START IP_TO_UINT(13, 8, 0, 2)
 

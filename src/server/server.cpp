@@ -11,7 +11,7 @@ struct epoll_event ep_ev, events[20];
 
 int find_user_by_ip(uint32_t addr) {
     pthread_mutex_lock(&mutex);
-    for (int i = 0; i < MAX_USER; ++i) {
+    for (int i = 0; i < MAX_USER_NUM; ++i) {
         if ((user_info_table[i].fd != -1) &&
             (user_info_table[i].v4addr.s_addr == addr)) {
             pthread_mutex_unlock(&mutex);
@@ -27,7 +27,7 @@ int find_user_by_fd(int fd) {
         return -1;
     }
     pthread_mutex_lock(&mutex);
-    for (int i = 0; i < MAX_USER; ++i) {
+    for (int i = 0; i < MAX_USER_NUM; ++i) {
         if (user_info_table[i].fd == fd) {
             pthread_mutex_unlock(&mutex);
             return i;
@@ -37,7 +37,20 @@ int find_user_by_fd(int fd) {
     return -1;
 }
 
-//response to IP_REQUEST packet
+// send keep alive package
+int send_keep_alive(int fd) {
+    logger.info("Send KEEPALIVE packet to %d", fd);
+    Msg msg;
+    msg.type = KEEPALIVE;
+    msg.length = HEADER_SIZE;
+    int ret;
+    pthread_mutex_lock(&mutex);
+    ret = send(fd, &msg, msg.length, 0);
+    pthread_mutex_unlock(&sock_lock);
+    return ret;
+}
+
+// send ip response to client
 int ip_response(int fd, int user) {
     logger.info("Send IP_RESPONSE packet to %d", fd);
     Msg msg;
@@ -47,20 +60,7 @@ int ip_response(int fd, int user) {
 
     sprintf(msg.data ,"%s 0.0.0.0 202.38.120.242 8.8.8.8 202.106.0.20", ip_str);
 
-    msg.length = strlen(msg.data) + MSG_HEADER_SIZE + 1;
-    int ret;
-    pthread_mutex_lock(&sock_lock);
-    ret = send(fd, &msg, msg.length, 0);
-    pthread_mutex_unlock(&sock_lock);
-    return ret;
-}
-
-// sen keep alive package
-int send_keep_alive(int fd) {
-    logger.info("Send KEEPALIVE packet to %d", fd);
-    Msg msg;
-    msg.type = KEEPALIVE;
-    msg.length = MSG_HEADER_SIZE;
+    msg.length = strlen(msg.data) + HEADER_SIZE + 1;
     int ret;
     pthread_mutex_lock(&sock_lock);
     ret = send(fd, &msg, msg.length, 0);
@@ -101,7 +101,7 @@ void recv_from_tun() {
         return;
     }
 
-    ret += MSG_HEADER_SIZE;
+    ret += HEADER_SIZE;
     struct iphdr *ip_head = (struct iphdr *)msg.data;
     char saddr[16], daddr[16];
     inet_ntop(AF_INET, &ip_head->saddr, saddr, sizeof(saddr));
@@ -139,12 +139,12 @@ int process_packet_from_client(int fd, int user) {
     }
 
     struct Msg msg;
-    int n = recv_from_client(fd, (char*)&msg, MSG_HEADER_SIZE);
+    int n = recv_from_client(fd, (char*)&msg, HEADER_SIZE);
 
     if (n <= 0){
         logger.error("Receive from client %d failed", fd);
         close(fd);
-        for (int i = 0; i < MAX_USER; ++i) {
+        for (int i = 0; i < MAX_USER_NUM; ++i) {
             if (user_info_table[i].fd == fd) {
                 user_info_table[i].fd = -1;
             }
@@ -166,11 +166,11 @@ int process_packet_from_client(int fd, int user) {
         return ret;
     } 
     else if (msg.type == NET_REQUEST) {
-        n = recv_from_client(fd, msg.data,msg.length - MSG_HEADER_SIZE);
-        if (n == msg.length - MSG_HEADER_SIZE) {
+        n = recv_from_client(fd, msg.data,msg.length - HEADER_SIZE);
+        if (n == msg.length - HEADER_SIZE) {
             iphdr *hdr = (struct iphdr *)msg.data;
             // send to internet via tun
-            write(tun_fd, msg.data, MSG_DATA_SIZE(msg));
+            write(tun_fd, msg.data, DATA_SIZE(msg));
         }
     } 
     else {
@@ -222,7 +222,7 @@ int init_server() {
         close(listen_fd);
         return ret;
     }
-    if ((ret = listen(listen_fd, MAX_USER)) < 0) {
+    if ((ret = listen(listen_fd, MAX_USER_NUM)) < 0) {
         logger.error("Server listen failed");
         return ret;
     }
@@ -262,13 +262,13 @@ int init_tun() {
         return ret;
     }
 
-    char buffer[256];
-    sprintf(buffer, "ip link set dev %s up", ifr.ifr_name);
-    system(buffer);
-    sprintf(buffer, "ip a add 13.8.0.1/24 dev %s", ifr.ifr_name);
-    system(buffer);
-    sprintf(buffer, "ip link set dev %s mtu %u", ifr.ifr_name, 1500);
-    system(buffer);
+    char cmd[100];
+    sprintf(cmd, "ip link set dev %s up", ifr.ifr_name);
+    system(cmd);
+    sprintf(cmd, "ip a add 13.8.0.1/24 dev %s", ifr.ifr_name);
+    system(cmd);
+    sprintf(cmd, "ip link set dev %s mtu %u", ifr.ifr_name, 1500);
+    system(cmd);
 
     setnonblocking(tun_fd);
     add_ep_event(tun_fd);
@@ -282,7 +282,7 @@ void* keep_alive(void*) {
         pthread_mutex_unlock(&mutex);
         sleep(1);
         pthread_mutex_lock(&mutex);
-        for (int i = 0; i < MAX_USER; ++i) {
+        for (int i = 0; i < MAX_USER_NUM; ++i) {
             int fd = user_info_table[i].fd;
             if (fd == -1) {
                 continue;
@@ -310,7 +310,7 @@ void close_all_fd() {
     if (listen_fd >= 0) {
         close(listen_fd);
     }
-    for (int i = 0; i < MAX_USER; ++i) {
+    for (int i = 0; i < MAX_USER_NUM; ++i) {
         if (user_info_table[i].fd >= 0) {
             close(user_info_table[i].fd);
         }
@@ -344,7 +344,7 @@ int main(){
     logger.info("Tun fd: %d", tun_fd);
 
     // init user_info_table
-    for (int i = 0; i < MAX_USER; ++i) {
+    for (int i = 0; i < MAX_USER_NUM; ++i) {
         user_info_table[i].v4addr.s_addr = htonl(IP_POOL_START + i);
         user_info_table[i].fd = -1;
     }
@@ -354,56 +354,58 @@ int main(){
     pthread_create(&thread_keep_alive, NULL, keep_alive, NULL);
     logger.info("Keep alive thread start");
 
-    int num_ep_wait_fd = 0, clientfd = 0;
-    struct sockaddr_in6 clientaddr;
-    socklen_t client_len = sizeof(clientaddr);
+    int num_ep_wait_fd = 0, client_fd = 0;
+    struct sockaddr_in6 client_addr6;
+    socklen_t client_len = sizeof(client_addr6);
     while (true) {
         num_ep_wait_fd = epoll_wait(epoll, events, 30, 500);
         
-        for (int i = 0; i < num_ep_wait_fd; ++i) {
-            if (events[i].data.fd == listen_fd) {
+        for (int ev_i = 0; ev_i < num_ep_wait_fd; ++ev_i) {
+            if (events[ev_i].data.fd == listen_fd) {
                 logger.info("Reveive listening event");
-                clientfd = accept(listen_fd, (struct sockaddr *)&clientaddr, &client_len);
-                if (clientfd == -1) {
+                client_fd = accept(listen_fd, (struct sockaddr *)&client_addr6, &client_len);
+                if (client_fd < 0) {
                     logger.error("Accept Listen failed");
-                    close(clientfd);
-                    exit(-1);
+                    close(client_fd);
+                    exit_server(2);
                 }
-                logger.info("Client fd: %d", clientfd);
+                logger.info("Client fd: %d", client_fd);
 
-                int i = 0;
+                int user_i = 0;
                 pthread_mutex_lock(&mutex);
-                for (; i < MAX_USER; ++i) {
-                    if (user_info_table[i].fd == -1) {
-                        user_info_table[i].fd = clientfd;
-                        memcpy(&(user_info_table[i].v6addr), &clientaddr, sizeof(struct sockaddr));
-                        user_info_table[i].secs = time(0);
-                        user_info_table[i].count = 20;
+                for (; user_i < MAX_USER_NUM; ++user_i) {
+                    if (user_info_table[user_i].fd < 0) {
+                        user_info_table[user_i].fd = client_fd;
+                        user_info_table[user_i].count = 20;
+                        user_info_table[user_i].secs = time(0);
+                        memcpy(&(user_info_table[user_i].v6addr), &client_addr6, sizeof(struct sockaddr));
                         break;
                     }
                 }
                 pthread_mutex_unlock(&mutex);
 
-                if (i == MAX_USER) {
+                if (user_i >= MAX_USER_NUM) {
                     logger.error("Cannot accept any more clients");
                     continue;
                 }
-                i = 0;
+                // i = 0;
 
-                add_ep_event(clientfd);
-                char str_addr[INET6_ADDRSTRLEN];
-                inet_ntop(AF_INET6, &(clientaddr.sin6_addr), str_addr, sizeof(str_addr));
-                logger.info("A new client %s: %d", str_addr, ntohs(clientaddr.sin6_port));
+                char addr6[INET6_ADDRSTRLEN];
+                inet_ntop(AF_INET6, &(client_addr6.sin6_addr), addr6, sizeof(addr6));
+                
+                add_ep_event(client_fd);
+                
+                logger.info("A new client %s: %d", addr6, ntohs(client_addr6.sin6_port));
             } 
             else { 
-                if (events[i].data.fd == tun_fd) {
+                if (events[ev_i].data.fd == tun_fd) {
                     recv_from_tun();
                 } 
-                else if (events[i].events & EPOLLIN) {
-                    int fd = events[i].data.fd;
+                else if (events[ev_i].events & EPOLLIN) {
+                    int fd = events[ev_i].data.fd;
                     int user = find_user_by_fd(fd);
 
-                    if (user < 0 || user >= MAX_USER) {
+                    if (user < 0 || user >= MAX_USER_NUM) {
                         logger.error("Received a packet from unknown client");
                         continue;
                     }
