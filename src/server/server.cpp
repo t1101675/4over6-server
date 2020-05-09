@@ -16,6 +16,7 @@ int ip_response(int fd, int user);
 int recv_from_client(int fd, char* data, int n);
 int recv_from_tun();
 int process_client_packet(int fd, int user);
+void set_user(int user_id, int client_fd, int count, int secs, struct sockaddr_in6 client_addr6);
 
 // epoll
 int epoll = -1;
@@ -86,16 +87,14 @@ int main(int argc, char*argv[]) {
                     close(client_fd);
                     exit_server(2);
                 }
-                logger.info("Client fd: %d", client_fd);
+                logger.info("Comming client's fd: %d", client_fd);
 
                 int user_i = 0;
+                // finding a user should be atomic
                 pthread_mutex_lock(&mutex);
                 for (; user_i < MAX_USER_NUM; ++user_i) {
                     if (user_info_table[user_i].fd < 0) {
-                        user_info_table[user_i].fd = client_fd;
-                        user_info_table[user_i].count = 20;
-                        user_info_table[user_i].secs = time(0);
-                        memcpy(&(user_info_table[user_i].v6addr), &client_addr6, sizeof(struct sockaddr));
+                        set_user(user_i, client_fd, 20, time(0), client_addr6);
                         break;
                     }
                 }
@@ -111,7 +110,7 @@ int main(int argc, char*argv[]) {
                 
                 add_ep_event(client_fd);
                 
-                logger.info("A new client %s: %d", addr6, ntohs(client_addr6.sin6_port));
+                logger.info("A new client has connected, (v6 addr: port) %s: %d", addr6, ntohs(client_addr6.sin6_port));
             } 
             else { 
                 if (events[ev_i].data.fd == tun_fd) {
@@ -188,11 +187,11 @@ int ip_response(int fd, int user) {
     Msg msg;
     msg.type = IP_RESPONSE;
     sprintf(msg.data ,"%s 0.0.0.0 202.38.120.242 8.8.8.8 202.106.0.20", ip_str);
+    // "+1" is very imprtant !!!
     msg.length = strlen(msg.data) + HEADER_SIZE + 1;
 
-    int ret;
     pthread_mutex_lock(&mutex);
-    ret = send(fd, &msg, msg.length, 0);
+    int ret = send(fd, &msg, msg.length, 0);
     pthread_mutex_unlock(&mutex);
     return ret;
 }
@@ -206,11 +205,11 @@ int recv_from_client(int fd, char* data, int n) {
         if (recv_size < 0) {
             return -1;
         } 
-        else if (recv_size == 0) {
-            return 0;
-        } 
         else if (recv_size > 0) {
             temp_n -= recv_size;
+        } 
+        else if (recv_size == 0) {
+            return 0;
         } 
         else {
             logger.error("sock_receive error");
@@ -276,10 +275,9 @@ int process_client_packet(int fd, int user) {
     if (n <= 0){
         logger.error("Receive from client %d failed", fd);
         close(fd);
-        for (int i = 0; i < MAX_USER_NUM; ++i) {
-            if (user_info_table[i].fd == fd) {
-                user_info_table[i].fd = -1;
-            }
+        int user_id = find_user_by_fd(fd);
+        if (user_id >= 0) {
+            user_info_table[user_id].fd = -1;
         }
         return -1;
     }
@@ -312,7 +310,14 @@ int process_client_packet(int fd, int user) {
     return 0;
 }
 
-void* keep_alive(void*) {
+void set_user(int user_id, int client_fd, int count, int secs, struct sockaddr_in6 client_addr6){
+    user_info_table[user_id].fd = client_fd;
+    user_info_table[user_id].count = 20;
+    user_info_table[user_id].secs = time(0);
+    memcpy(&(user_info_table[user_id].v6addr), &client_addr6, sizeof(struct sockaddr));
+}
+
+void *keep_alive(void *) {
     pthread_mutex_lock(&mutex);
     while (true) {
         pthread_mutex_unlock(&mutex);
@@ -364,8 +369,7 @@ void del_ep_event(int fd) {
 }
 
 int set_fd_not_block(int sock) {
-    int opts;
-    opts = fcntl(sock, F_GETFL);
+    int opts = fcntl(sock, F_GETFL);
     if (opts < 0) {
         logger.error("fcntl(sock,GETFL)");
         return -1;
@@ -409,9 +413,9 @@ int init_server() {
 }
 
 void init_network() {
+    system("echo \"1\" > /proc/sys/net/ipv4/ip_forward");
     system("iptables -F");
     system("iptables -t nat -F");
-    system("echo \"1\" > /proc/sys/net/ipv4/ip_forward");
     system("iptables -A FORWARD -j ACCEPT");
     system("iptables -t nat -A POSTROUTING -s 13.8.0.0/8 -j MASQUERADE");
 }
@@ -421,8 +425,8 @@ int init_tun() {
     char dev_name[IFNAMSIZ];
     strcpy(dev_name, "4o6");
     if ((tun_fd = open("/dev/net/tun", O_RDWR)) < 0) {
-        logger.error("Create tun failed");
-        return tun_fd;
+        logger.error("Creating tun dev failed");
+        return -1;
     }
 
     struct ifreq ifr;
