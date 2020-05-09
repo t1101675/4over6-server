@@ -7,6 +7,7 @@ int tun_fd = -1;
 Logger logger;
 pthread_mutex_t mutex;
 pthread_mutex_t sock_lock;
+struct epoll_event ep_ev, events[20];
 
 int find_user_by_ip(uint32_t addr) {
     pthread_mutex_lock(&mutex);
@@ -54,6 +55,7 @@ int ip_response(int fd, int user) {
     return ret;
 }
 
+// sen keep alive package
 int send_keep_alive(int fd) {
     logger.info("Send KEEPALIVE packet to %d", fd);
     Msg msg;
@@ -66,7 +68,8 @@ int send_keep_alive(int fd) {
     return ret;
 }
 
-int sock_receive(int fd, char* buff, int n) {
+// receive packet from client
+int recv_from_client(int fd, char* buff, int n) {
     int left = n;
     pthread_mutex_lock(&sock_lock);
     while (left > 0) {
@@ -89,6 +92,7 @@ int sock_receive(int fd, char* buff, int n) {
     return n;
 }
 
+// receive packet from tun
 void recv_from_tun() {
     struct Msg msg;
     int ret = read(tun_fd, msg.data, 1500);
@@ -128,13 +132,15 @@ void recv_from_tun() {
     }
 }
 
+// receive and read the packet from client
 int process_packet_from_client(int fd, int user) {
     if (fd < 0) {
         return -1;
     }
 
     struct Msg msg;
-    int n = sock_receive(fd, (char*)&msg, MSG_HEADER_SIZE);
+    int n = recv_from_client(fd, (char*)&msg, MSG_HEADER_SIZE);
+
     if (n <= 0){
         logger.error("Receive from client %d failed", fd);
         close(fd);
@@ -160,9 +166,10 @@ int process_packet_from_client(int fd, int user) {
         return ret;
     } 
     else if (msg.type == NET_REQUEST) {
-        n = sock_receive(fd, msg.data,msg.length - MSG_HEADER_SIZE);
+        n = recv_from_client(fd, msg.data,msg.length - MSG_HEADER_SIZE);
         if (n == msg.length - MSG_HEADER_SIZE) {
             iphdr *hdr = (struct iphdr *)msg.data;
+            // send to internet via tun
             write(tun_fd, msg.data, MSG_DATA_SIZE(msg));
         }
     } 
@@ -172,20 +179,19 @@ int process_packet_from_client(int fd, int user) {
     return 0;
 }
 
-struct epoll_event ev, events[20];
-
 void add_ep_event(int fd) {
-    ev.events = EPOLLIN;
-    ev.data.fd = fd;
-    epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &ev);
+    ep_ev.events = EPOLLIN;
+    ep_ev.data.fd = fd;
+    epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &ep_ev);
 }
 
 void del_ep_event(int fd) {
-    ev.events = EPOLLIN;
-    ev.data.fd= fd;
-    epoll_ctl(epoll, EPOLL_CTL_DEL, fd, &ev);
+    ep_ev.events = EPOLLIN;
+    ep_ev.data.fd= fd;
+    epoll_ctl(epoll, EPOLL_CTL_DEL, fd, &ep_ev);
 }
 
+// Refer to https://github.com/chwangthu/4over6/
 void setnonblocking(int sock) {
     int opts;
     opts = fcntl(sock, F_GETFL);
@@ -225,9 +231,10 @@ int init_server() {
     return listen_fd;
 }
 
-void init_iptable() {
+void init_network() {
     system("iptables -F");
     system("iptables -t nat -F");
+    system("echo \"1\" > /proc/sys/net/ipv4/ip_forward");
     system("iptables -A FORWARD -j ACCEPT");
     system("iptables -t nat -A POSTROUTING -s 13.8.0.0/8 -j MASQUERADE");
 }
@@ -330,7 +337,7 @@ int main(){
         exit_server(2);
     }
 
-    init_iptable();
+    init_network();
 
     logger.info("Server Start, Listening at %d", SERVER_PORT);
     logger.info("Listen fd: %d", listen_fd);
@@ -370,7 +377,7 @@ int main(){
                     if (user_info_table[i].fd == -1) {
                         user_info_table[i].fd = clientfd;
                         memcpy(&(user_info_table[i].v6addr), &clientaddr, sizeof(struct sockaddr));
-                        user_info_table[i].secs = time(NULL);
+                        user_info_table[i].secs = time(0);
                         user_info_table[i].count = 20;
                         break;
                     }

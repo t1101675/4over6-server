@@ -24,20 +24,11 @@
 #include <linux/if.h>
 #include <linux/if_tun.h>
 
-// Message types
-/*
-	100: IP request
-	101: IP response
-	102: Network request
-	103: Network response
-	104: Keepalive
-*/
-
-#define IP_REQUEST    100
-#define IP_RESPONSE   101
-#define NET_REQUEST   102
-#define NET_RESPONSE  103
-#define KEEPALIVE     104
+#define IP_REQUEST 100  // IP request
+#define IP_RESPONSE 101 // IP response
+#define NET_REQUEST 102  // Network request
+#define NET_RESPONSE 103  // Network response
+#define KEEPALIVE 104     // Keepalive
 #define SERVER_PORT   4321
 
 #define MAX_EPOLL_EVENT 100
@@ -53,7 +44,6 @@ struct Msg {
 
 #define MSG_HEADER_SIZE   5
 #define MSG_DATA_SIZE(msg)  (msg.length-MSG_HEADER_SIZE)
-// #define CLIENT_START_ADDR "10.0.0.3"
 #define IP_TO_UINT(a, b, c, d) (((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
 #define IP_POOL_START IP_TO_UINT(13, 8, 0, 2)
 
