@@ -1,7 +1,7 @@
 #include "server.h"
 #include "logger.h"
 
-int epoll;
+int epoll = -1;
 int listen_fd = -1; //for server to listen
 int tun_fd = -1;
 Logger logger;
@@ -54,14 +54,14 @@ int send_keep_alive(int fd) {
 // send ip response to client
 int ip_response(int fd, int user) {
     logger.info("Send IP_RESPONSE packet to %d", fd);
-    Msg msg;
-    msg.type = IP_RESPONSE;
     char ip_str[16];
     inet_ntop(AF_INET, &(user_info_table[user].v4addr), ip_str, 16);
-
+    
+    Msg msg;
+    msg.type = IP_RESPONSE;
     sprintf(msg.data ,"%s 0.0.0.0 202.38.120.242 8.8.8.8 202.106.0.20", ip_str);
-
     msg.length = strlen(msg.data) + HEADER_SIZE + 1;
+    
     int ret;
     pthread_mutex_lock(&mutex);
     ret = send(fd, &msg, msg.length, 0);

@@ -36,16 +36,17 @@
 
 #define MAX_DATA_LEN  4096
 
+#define HEADER_SIZE 5
+#define DATA_SIZE(msg) (msg.length - HEADER_SIZE)
+#define IP_TO_UINT(a, b, c, d) (((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
+#define IP_POOL_START IP_TO_UINT(13, 8, 0, 2)
+
 struct Msg {
     int length;
     char type;
     char data[MAX_DATA_LEN];
 };
 
-#define HEADER_SIZE   5
-#define DATA_SIZE(msg)  (msg.length-HEADER_SIZE)
-#define IP_TO_UINT(a, b, c, d) (((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
-#define IP_POOL_START IP_TO_UINT(13, 8, 0, 2)
 
 struct UserInfo {
     int fd;
