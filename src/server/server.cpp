@@ -314,12 +314,6 @@ void* keep_alive(void*) {
     }
 }
 
-static void exit_server(int sig) {
-    close_all_fd();
-    logger.info("Exit");
-    exit(0);
-}
-
 void close_all_fd() {
     if (tun_fd >= 0) {
         close(tun_fd);
@@ -335,6 +329,12 @@ void close_all_fd() {
             close(user_info_table[i].fd);
         }
     }
+}
+
+static void exit_server(int sig) {
+    close_all_fd();
+    logger.info("Exit");
+    exit(0);
 }
 
 int main(){
