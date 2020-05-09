@@ -53,4 +53,4 @@ struct UserInfo {
     int secs;
     struct in_addr v4addr;
     struct in6_addr v6addr;
-} user_info_table[MAX_USER];
+} user_info_table[MAX_USER_NUM];
