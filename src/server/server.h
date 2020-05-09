@@ -55,7 +55,7 @@ struct Msg {
 #define MSG_DATA_SIZE(msg)  (msg.length-MSG_HEADER_SIZE)
 // #define CLIENT_START_ADDR "10.0.0.3"
 #define IP_TO_UINT(a, b, c, d) (((a) << 24) | ((b) << 16) | ((c) << 8) | (d))
-#define IP_POOL_START IP_TO_UINT(10, 0, 0, 3)
+#define IP_POOL_START IP_TO_UINT(13, 8, 0, 2)
 
 struct UserInfo {
     int fd;

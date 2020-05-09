@@ -105,7 +105,7 @@ int sock_receive(int fd, char* buff, int n) {
     return n;
 }
 
-void process_packet_to_tun() {
+void recv_from_tun() {
     struct Msg msg;
     int ret = read(tunfd, msg.data, 1500);
     if (ret <= 0) {
@@ -233,15 +233,14 @@ int init_server() {
 void init_iptable() {
     system("iptables -F");
     system("iptables -t nat -F");
-    system("echo \"1\" > /proc/sys/net/ipv4/ip_forward"); //enable ip forwarding
-    //accept packets
+    //accept to forward all packages
     system("iptables -A FORWARD -j ACCEPT");
-    //set SNAT, POSTROUTING applies when a packet leaves the interface
-    system("iptables -t nat -A POSTROUTING -s 10.0.0.0/8 -j MASQUERADE");
+    //when leave the interface, replace the source address
+    system("iptables -t nat -A POSTROUTING -s 13.8.0.0/8 -j MASQUERADE");
 }
 
 //refer to linux kernel
-int tun_alloc(char* dev) {
+int tun_alloc(char* dev_name) {
     int fd, err;
     if ((fd = open("/dev/net/tun", O_RDWR)) < 0){
         logger.error("Create tun failed");
@@ -252,8 +251,8 @@ int tun_alloc(char* dev) {
     memset(&ifr, 0, sizeof(struct ifreq));
     ifr.ifr_flags |= IFF_TUN | IFF_NO_PI;
 
-    if (*dev)
-        strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+    if (*dev_name)
+        strncpy(ifr.ifr_name, dev_name, IFNAMSIZ);
     if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
         logger.error("Set tun device name failed");
         close(fd);
@@ -263,7 +262,7 @@ int tun_alloc(char* dev) {
     char buffer[256];
     sprintf(buffer,"ip link set dev %s up", ifr.ifr_name);
     system(buffer);
-    sprintf(buffer,"ip a add 10.0.0.1/24 dev %s", ifr.ifr_name);
+    sprintf(buffer,"ip a add 13.8.0.1/24 dev %s", ifr.ifr_name);
     system(buffer);
     sprintf(buffer,"ip link set dev %s mtu %u", ifr.ifr_name, 1500);
     system(buffer);
@@ -271,10 +270,6 @@ int tun_alloc(char* dev) {
 }
 
 void init_tun() {
-    // tun_addr={0};
-    // inet_aton("10.0.0.2", &tun_addr);
-    // logger.info("TUN ADDRESS: 10.0.0.2");
-
     char dev[IFNAMSIZ];
     strcpy(dev, "4over6");
     tunfd = tun_alloc(dev);
@@ -393,10 +388,9 @@ int main(){
             } 
             else { 
                 if (events[i].data.fd == tunfd) {
-                    process_packet_to_tun();
+                    recv_from_tun();
                 } 
                 else if (events[i].events & EPOLLIN) {
-                    //only for one client
                     int fd = events[i].data.fd;
                     int user = 0;
                     user = find_user_by_fd(fd);
