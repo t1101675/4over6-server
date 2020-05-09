@@ -6,7 +6,7 @@ int listen_fd = -1; //for server to listen
 int tun_fd = -1;
 Logger logger;
 pthread_mutex_t mutex;
-pthread_mutex_t sock_lock;
+// pthread_mutex_t sock_lock;
 struct epoll_event ep_ev, events[20];
 
 int find_user_by_ip(uint32_t addr) {
@@ -46,7 +46,7 @@ int send_keep_alive(int fd) {
     int ret;
     pthread_mutex_lock(&mutex);
     ret = send(fd, &msg, msg.length, 0);
-    pthread_mutex_unlock(&sock_lock);
+    pthread_mutex_unlock(&mutex);
     return ret;
 }
 
@@ -62,16 +62,16 @@ int ip_response(int fd, int user) {
 
     msg.length = strlen(msg.data) + HEADER_SIZE + 1;
     int ret;
-    pthread_mutex_lock(&sock_lock);
+    pthread_mutex_lock(&mutex);
     ret = send(fd, &msg, msg.length, 0);
-    pthread_mutex_unlock(&sock_lock);
+    pthread_mutex_unlock(&mutex);
     return ret;
 }
 
 // receive packet from client
 int recv_from_client(int fd, char* buff, int n) {
     int left = n;
-    pthread_mutex_lock(&sock_lock);
+    pthread_mutex_lock(&mutex);
     while (left > 0) {
         ssize_t recvn = recv(fd, buff + n - left, left, 0);
         if (recvn == -1) {
@@ -88,7 +88,7 @@ int recv_from_client(int fd, char* buff, int n) {
             return -1;
         }
     }
-    pthread_mutex_unlock(&sock_lock);
+    pthread_mutex_unlock(&mutex);
     return n;
 }
 
@@ -122,13 +122,13 @@ void recv_from_tun() {
     if (ip_head->version == 4) {
         msg.type = NET_RESPONSE;
         msg.length = ret;
-        pthread_mutex_lock(&sock_lock);
+        pthread_mutex_lock(&mutex);
         if((send(fd, &msg, msg.length, 0)) < 0) {
-            pthread_mutex_unlock(&sock_lock);
+            pthread_mutex_unlock(&mutex);
             logger.error("Send to client %s failed", daddr);
             return;
         }
-        pthread_mutex_unlock(&sock_lock);
+        pthread_mutex_unlock(&mutex);
     }
 }
 
