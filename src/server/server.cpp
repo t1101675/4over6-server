@@ -6,9 +6,9 @@ int listen_fd = -1; //for server to listen
 int tun_fd = -1;
 Logger logger;
 pthread_mutex_t mutex;
-// pthread_mutex_t sock_lock;
-struct epoll_event ep_ev, events[20];
+struct epoll_event ep_ev, events[30];
 
+// use ip addr to find users
 int find_user_by_ip(uint32_t addr) {
     pthread_mutex_lock(&mutex);
     for (int i = 0; i < MAX_USER_NUM; ++i) {
@@ -22,6 +22,7 @@ int find_user_by_ip(uint32_t addr) {
     return -1;
 }
 
+// user ids to find users
 int find_user_by_fd(int fd) {
     if (fd < 0) {
         return -1;
@@ -95,13 +96,12 @@ int recv_from_client(int fd, char* buff, int n) {
 // receive packet from tun
 void recv_from_tun() {
     struct Msg msg;
-    int ret = read(tun_fd, msg.data, 1500);
-    if (ret <= 0) {
+    int read_size = read(tun_fd, msg.data, 1500);
+    if (read_size <= 0) {
         logger.error("Read packet to tun failed");
         return;
     }
 
-    ret += HEADER_SIZE;
     struct iphdr *ip_head = (struct iphdr *)msg.data;
     char saddr[16], daddr[16];
     inet_ntop(AF_INET, &ip_head->saddr, saddr, sizeof(saddr));
@@ -118,10 +118,11 @@ void recv_from_tun() {
 
     int fd = user_info_table[user].fd;
 
+    int msg_length = read_size + HEADER_SIZE;
     //send the packet back to client
     if (ip_head->version == 4) {
         msg.type = NET_RESPONSE;
-        msg.length = ret;
+        msg.length = msg_length;
         pthread_mutex_lock(&mutex);
         if((send(fd, &msg, msg.length, 0)) < 0) {
             pthread_mutex_unlock(&mutex);
@@ -133,7 +134,7 @@ void recv_from_tun() {
 }
 
 // receive and read the packet from client
-int process_packet_from_client(int fd, int user) {
+int process_packet_client_packet(int fd, int user) {
     if (fd < 0) {
         return -1;
     }
@@ -153,8 +154,8 @@ int process_packet_from_client(int fd, int user) {
     }
 
     if (msg.type == KEEPALIVE) {
+        user_info_table[user].secs = time(0);
         logger.info("Receive a keepalive packet from client %d", fd);
-        user_info_table[user].secs = time(NULL);
     } 
     else if (msg.type == IP_REQUEST) {
         logger.info("Receive a IP REQUEST packet from client %d", fd);
@@ -167,7 +168,7 @@ int process_packet_from_client(int fd, int user) {
     } 
     else if (msg.type == NET_REQUEST) {
         n = recv_from_client(fd, msg.data,msg.length - HEADER_SIZE);
-        if (n == msg.length - HEADER_SIZE) {
+        if (n == DATA_SIZE(msg)) {
             iphdr *hdr = (struct iphdr *)msg.data;
             // send to internet via tun
             write(tun_fd, msg.data, DATA_SIZE(msg));
@@ -212,11 +213,13 @@ int init_server() {
         logger.error("Server listening init failed");
         return listen_fd;
     }
-    struct sockaddr_in6 server_addr;
-    server_addr.sin6_family = AF_INET6;
-    server_addr.sin6_addr = in6addr_any;
-    server_addr.sin6_port = htons(SERVER_PORT);
-    int ret = bind(listen_fd, (struct sockaddr *) &server_addr, sizeof(server_addr));
+    
+    struct sockaddr_in6 server_addr6;
+    server_addr6.sin6_addr = in6addr_any;
+    server_addr6.sin6_port = htons(SERVER_PORT);
+    server_addr6.sin6_family = AF_INET6;
+
+    int ret = bind(listen_fd, (struct sockaddr *) &server_addr6, sizeof(server_addr6));
     if (ret == -1) {
         logger.error("Server bind failed");
         close(listen_fd);
@@ -227,7 +230,7 @@ int init_server() {
         return ret;
     }
     setnonblocking(listen_fd);
-    del_ep_event(listen_fd);
+    add_ep_event(listen_fd);
     return listen_fd;
 }
 
@@ -262,11 +265,14 @@ int init_tun() {
         return ret;
     }
 
+    // set new tun dev
     char cmd[100];
     sprintf(cmd, "ip link set dev %s up", ifr.ifr_name);
     system(cmd);
+    
     sprintf(cmd, "ip a add 13.8.0.1/24 dev %s", ifr.ifr_name);
     system(cmd);
+    
     sprintf(cmd, "ip link set dev %s mtu %u", ifr.ifr_name, 1500);
     system(cmd);
 
@@ -281,38 +287,29 @@ void* keep_alive(void*) {
     while (true) {
         pthread_mutex_unlock(&mutex);
         sleep(1);
+
         pthread_mutex_lock(&mutex);
-        for (int i = 0; i < MAX_USER_NUM; ++i) {
-            int fd = user_info_table[i].fd;
-            if (fd == -1) {
+        for (int user_i = 0; user_i < MAX_USER_NUM; ++user_i) {
+            int client_fd = user_info_table[user_i].fd;
+            if (client_fd < 0) {
                 continue;
             }
-            if (time(NULL) - user_info_table[i].secs > 60) {
-                logger.info("Timeout, remove client %d", fd);
-                user_info_table[i].fd = -1;
-                close(fd);
-                del_ep_event(fd);
-            } else {
-                user_info_table[i].count -= 1;
-                if ( user_info_table[i].count == 0 ) {
-                    send_keep_alive(fd);
-                    user_info_table[i].count = 20;
+
+            int time_diff = time(0) - user_info_table[user_i].secs;
+            if (time_diff > 60) {
+                logger.info("Timeout, remove client %d", client_fd);
+                user_info_table[user_i].fd = -1;
+                del_ep_event(client_fd);
+                close(client_fd);
+            } 
+            else {
+                user_info_table[user_i].count--;
+
+                if (user_info_table[user_i].count == 0) {
+                    user_info_table[user_i].count = 20;
+                    send_keep_alive(client_fd);
                 }
             }
-        }
-    }
-}
- 
-void close_all_fd() {
-    if (tun_fd >= 0) {
-        close(tun_fd);
-    }
-    if (listen_fd >= 0) {
-        close(listen_fd);
-    }
-    for (int i = 0; i < MAX_USER_NUM; ++i) {
-        if (user_info_table[i].fd >= 0) {
-            close(user_info_table[i].fd);
         }
     }
 }
@@ -321,6 +318,23 @@ static void exit_server(int sig) {
     close_all_fd();
     logger.info("Exit");
     exit(0);
+}
+
+void close_all_fd() {
+    if (tun_fd >= 0) {
+        close(tun_fd);
+    }
+    if (listen_fd >= 0) {
+        close(listen_fd);
+    }
+    if (epoll >= 0) {
+        close(epoll);
+    }
+    for (int i = 0; i < MAX_USER_NUM; ++i) {
+        if (user_info_table[i].fd >= 0) {
+            close(user_info_table[i].fd);
+        }
+    }
 }
 
 int main(){
@@ -343,7 +357,7 @@ int main(){
     logger.info("Listen fd: %d", listen_fd);
     logger.info("Tun fd: %d", tun_fd);
 
-    // init user_info_table
+    // init user info table
     for (int i = 0; i < MAX_USER_NUM; ++i) {
         user_info_table[i].v4addr.s_addr = htonl(IP_POOL_START + i);
         user_info_table[i].fd = -1;
@@ -359,7 +373,7 @@ int main(){
     socklen_t client_len = sizeof(client_addr6);
     while (true) {
         num_ep_wait_fd = epoll_wait(epoll, events, 30, 500);
-        
+        // for every event in epoll
         for (int ev_i = 0; ev_i < num_ep_wait_fd; ++ev_i) {
             if (events[ev_i].data.fd == listen_fd) {
                 logger.info("Reveive listening event");
@@ -388,7 +402,6 @@ int main(){
                     logger.error("Cannot accept any more clients");
                     continue;
                 }
-                // i = 0;
 
                 char addr6[INET6_ADDRSTRLEN];
                 inet_ntop(AF_INET6, &(client_addr6.sin6_addr), addr6, sizeof(addr6));
@@ -421,11 +434,13 @@ int main(){
                         continue;
                     }
 
-                    process_packet_from_client(fd, user);
+                    process_packet_client_packet(fd, user);
                 }
             }
         }
     }
+
     close_all_fd();
+    
     return 0;
 }
