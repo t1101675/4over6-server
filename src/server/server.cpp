@@ -61,7 +61,7 @@ int ip_response(int fd, int user) {
     msg.type = IP_RESPONSE;
     sprintf(msg.data ,"%s 0.0.0.0 202.38.120.242 8.8.8.8 202.106.0.20", ip_str);
     msg.length = strlen(msg.data) + HEADER_SIZE + 1;
-    
+
     int ret;
     pthread_mutex_lock(&mutex);
     ret = send(fd, &msg, msg.length, 0);
@@ -192,19 +192,19 @@ void del_ep_event(int fd) {
     epoll_ctl(epoll, EPOLL_CTL_DEL, fd, &ep_ev);
 }
 
-// Refer to https://github.com/chwangthu/4over6/
-void setnonblocking(int sock) {
+int set_fd_not_block(int sock) {
     int opts;
     opts = fcntl(sock, F_GETFL);
     if (opts < 0) {
         logger.error("fcntl(sock,GETFL)");
-        exit(1);
+        return -1;
     }
     opts = opts | O_NONBLOCK;
     if (fcntl(sock, F_SETFL, opts) < 0) {
         logger.error("fcntl(sock,SETFL,opts)");
-        exit(1);
+        return -1;
     }
+    return 0;
 }
 
 int init_server() {
@@ -219,17 +219,20 @@ int init_server() {
     server_addr6.sin6_port = htons(SERVER_PORT);
     server_addr6.sin6_family = AF_INET6;
 
-    int ret = bind(listen_fd, (struct sockaddr *) &server_addr6, sizeof(server_addr6));
-    if (ret == -1) {
+    int ret = 0;
+    if ((ret = bind(listen_fd, (struct sockaddr *) &server_addr6, sizeof(server_addr6))) < 0) {
         logger.error("Server bind failed");
-        close(listen_fd);
         return ret;
     }
     if ((ret = listen(listen_fd, MAX_USER_NUM)) < 0) {
         logger.error("Server listen failed");
         return ret;
     }
-    setnonblocking(listen_fd);
+
+    if ((ret = set_fd_not_block(listen_fd)) < 0) {
+        return ret;
+    }
+    
     add_ep_event(listen_fd);
     return listen_fd;
 }
@@ -276,7 +279,9 @@ int init_tun() {
     sprintf(cmd, "ip link set dev %s mtu %u", ifr.ifr_name, 1500);
     system(cmd);
 
-    setnonblocking(tun_fd);
+    if ((ret = set_fd_not_block(tun_fd)) < 0) {
+        return ret;
+    }
     add_ep_event(tun_fd);
 
     return ret;
