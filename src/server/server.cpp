@@ -1,12 +1,8 @@
 #include "server.h"
 #include "logger.h"
 
-int epoll = -1;
-int listen_fd = -1;
-int tun_fd = -1;
-Logger logger;
 pthread_mutex_t mutex;
-struct epoll_event ep_ev, events[30];
+Logger logger;
 
 // find
 int find_user_by_ip(uint32_t addr);
@@ -14,19 +10,22 @@ int find_user_by_fd(int fd);
 
 // keep alive
 void* keep_alive(void*);
-int send_keep_alive(int fd);
 
 // process request
 int ip_response(int fd, int user);
-int recv_from_client(int fd, char* buff, int n);
-void recv_from_tun();
+int recv_from_client(int fd, char* data, int n);
+int recv_from_tun();
 int process_client_packet(int fd, int user);
 
 // epoll
+int epoll = -1;
+struct epoll_event ep_ev, events[30];
 void add_ep_event(int fd);
 void del_ep_event(int fd);
 
 // init
+int tun_fd = -1;
+int listen_fd = -1;
 int set_fd_not_block(int sock);
 int init_server();
 void init_network();
@@ -72,6 +71,10 @@ int main(int argc, char*argv[]) {
     struct sockaddr_in6 client_addr6;
     socklen_t client_len = sizeof(client_addr6);
     while (true) {
+        if (epoll < 0) {
+            logger.error("Epoll Error");
+            break;
+        }
         num_ep_wait_fd = epoll_wait(epoll, events, 30, 500);
         // for every event in epoll
         for (int ev_i = 0; ev_i < num_ep_wait_fd; ++ev_i) {
@@ -176,19 +179,6 @@ int find_user_by_fd(int fd) {
     return -1;
 }
 
-// send keep alive package
-int send_keep_alive(int fd) {
-    logger.info("Send KEEPALIVE packet to %d", fd);
-    Msg msg;
-    msg.type = KEEPALIVE;
-    msg.length = HEADER_SIZE;
-    int ret;
-    pthread_mutex_lock(&mutex);
-    ret = send(fd, &msg, msg.length, 0);
-    pthread_mutex_unlock(&mutex);
-    return ret;
-}
-
 // send ip response to client
 int ip_response(int fd, int user) {
     logger.info("Send IP_RESPONSE packet to %d", fd);
@@ -208,19 +198,19 @@ int ip_response(int fd, int user) {
 }
 
 // receive packet from client
-int recv_from_client(int fd, char* buff, int n) {
-    int left = n;
+int recv_from_client(int fd, char* data, int n) {
+    int temp_n = n;
     pthread_mutex_lock(&mutex);
-    while (left > 0) {
-        ssize_t recvn = recv(fd, buff + n - left, left, 0);
-        if (recvn == -1) {
+    while (temp_n > 0) {
+        ssize_t recv_size = recv(fd, data + n - temp_n, temp_n, 0);
+        if (recv_size < 0) {
             return -1;
         } 
-        else if (recvn == 0) {
+        else if (recv_size == 0) {
             return 0;
         } 
-        else if (recvn > 0) {
-            left -= recvn;
+        else if (recv_size > 0) {
+            temp_n -= recv_size;
         } 
         else {
             logger.error("sock_receive error");
@@ -232,23 +222,24 @@ int recv_from_client(int fd, char* buff, int n) {
 }
 
 // receive packet from tun
-void recv_from_tun() {
+int recv_from_tun() {
     struct Msg msg;
     int read_size = read(tun_fd, msg.data, 1500);
     if (read_size <= 0) {
         logger.error("Read packet to tun failed");
-        return;
+        return -1;
     }
 
     struct iphdr *ip_head = (struct iphdr *)msg.data;
-    char saddr[16], daddr[16];
+    char saddr[16];
     inet_ntop(AF_INET, &ip_head->saddr, saddr, sizeof(saddr));
+    char daddr[16];
     inet_ntop(AF_INET, &ip_head->daddr, daddr, sizeof(daddr));
     
     int user = find_user_by_ip(ip_head->daddr);
     if (user < 0) {
         logger.error("Cannot find client %s", daddr);
-        return;
+        return -1;
     }
 
     assert(user_info_table[user].fd != -1);
@@ -259,16 +250,18 @@ void recv_from_tun() {
     int msg_length = read_size + HEADER_SIZE;
     //send the packet back to client
     if (ip_head->version == 4) {
+        int ret = 0;
         msg.type = NET_RESPONSE;
         msg.length = msg_length;
         pthread_mutex_lock(&mutex);
-        if((send(fd, &msg, msg.length, 0)) < 0) {
+        if((ret = send(fd, &msg, msg.length, 0)) < 0) {
             pthread_mutex_unlock(&mutex);
             logger.error("Send to client %s failed", daddr);
-            return;
+            return ret;
         }
         pthread_mutex_unlock(&mutex);
     }
+    return 0;
 }
 
 // receive and read the packet from client
@@ -344,7 +337,14 @@ void* keep_alive(void*) {
 
                 if (user_info_table[user_i].count == 0) {
                     user_info_table[user_i].count = 20;
-                    send_keep_alive(client_fd);
+
+                    logger.info("Send KEEPALIVE packet to %d", client_fd);
+                    Msg msg;
+                    msg.type = KEEPALIVE;
+                    msg.length = HEADER_SIZE;
+                    pthread_mutex_lock(&mutex);
+                    send(client_fd, &msg, msg.length, 0);
+                    pthread_mutex_unlock(&mutex);
                 }
             }
         }
