@@ -1,7 +1,6 @@
 #include "server.h"
 #include "logger.h"
 
-pthread_mutex_t mutex;
 Logger logger;
 
 // find
@@ -12,6 +11,8 @@ int find_user_by_fd(int fd);
 void* keep_alive(void*);
 
 // process request
+pthread_mutex_t mutex;
+pthread_mutex_t mutex_net;
 int ip_response(int fd, int user);
 int recv_from_client(int fd, char* data, int n);
 int recv_from_tun();
@@ -190,16 +191,16 @@ int ip_response(int fd, int user) {
     // "+1" is very imprtant !!!
     msg.length = strlen(msg.data) + HEADER_SIZE + 1;
 
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex_net);
     int ret = send(fd, &msg, msg.length, 0);
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&mutex_net);
     return ret;
 }
 
 // receive packet from client
 int recv_from_client(int fd, char* data, int n) {
     int temp_n = n;
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex_net);
     while (temp_n > 0) {
         ssize_t recv_size = recv(fd, data + n - temp_n, temp_n, 0);
         if (recv_size < 0) {
@@ -216,7 +217,7 @@ int recv_from_client(int fd, char* data, int n) {
             return -1;
         }
     }
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&mutex_net);
     return n;
 }
 
@@ -252,13 +253,13 @@ int recv_from_tun() {
         int ret = 0;
         msg.type = NET_RESPONSE;
         msg.length = msg_length;
-        pthread_mutex_lock(&mutex);
+        pthread_mutex_lock(&mutex_net);
         if((ret = send(fd, &msg, msg.length, 0)) < 0) {
-            pthread_mutex_unlock(&mutex);
+            pthread_mutex_unlock(&mutex_net);
             logger.error("Send to client %s failed", daddr);
             return ret;
         }
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(&mutex_net);
     }
     return 0;
 }
@@ -347,7 +348,9 @@ void *keep_alive(void *) {
                     Msg msg;
                     msg.type = KEEPALIVE;
                     msg.length = HEADER_SIZE;
+                    pthread_mutex_lock(&mutex_net);
                     send(client_fd, &msg, msg.length, 0);
+                    pthread_mutex_unlock(&mutex_net);
                 }
             }
         }
