@@ -347,9 +347,7 @@ void *keep_alive(void *) {
                     Msg msg;
                     msg.type = KEEPALIVE;
                     msg.length = HEADER_SIZE;
-                    pthread_mutex_lock(&mutex);
                     send(client_fd, &msg, msg.length, 0);
-                    pthread_mutex_unlock(&mutex);
                 }
             }
         }
